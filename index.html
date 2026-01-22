@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MyID Touch Kiosk</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Babel for JSX transformation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #e2e8f0; /* slate-200 */
+        }
+        .font-mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+        
+        /* Animation Classes */
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        .animate-fadeIn {
+            animation: fadeIn 0.5s ease-out forwards;
+        }
+        
+        @keyframes slideInRight {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        .animate-slideInRight {
+            animation: slideInRight 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        @keyframes slideUp {
+            from { transform: translateY(100%); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        .animate-slideUp {
+            animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <!-- React Code -->
+    <script type="text/babel" data-type="module">
+        import React, { useState, useEffect, useRef } from 'https://esm.sh/react@18.2.0';
+        import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
+        import { 
+            CreditCard, Fingerprint, ShieldCheck, Fuel, ShoppingBasket, 
+            Banknote, CheckCircle, AlertTriangle, Lock, Server, User, 
+            LogOut, ChevronDown, Smartphone, MessageSquare, X, ArrowRight, 
+            Zap, Cpu, Trash2, Clock, Camera, Scan, Key, BellRing
+        } from 'https://esm.sh/lucide-react@0.263.1';
+
+        /**
+         * MERCHANT CONFIGURATION PROFILES
+         */
+        const MERCHANT_PROFILES = {
+            FUEL: {
+                id: 'FUEL',
+                name: 'PETRONAS (Subsidi Pukal)',
+                theme: 'blue',
+                icon: <Fuel className="w-12 h-12 text-blue-600" />,
+                unit: 'Liters',
+                quotaLabel: 'Monthly Fuel Quota',
+                data: { total: 200, used: 50, remaining: 150, item: 'RON95 BUDI95', actionText: 'AUTHORIZE PUMP' }
+            },
+            RETAIL: {
+                id: 'RETAIL',
+                name: 'MYDIN (Subsidi Barang)',
+                theme: 'yellow',
+                icon: <ShoppingBasket className="w-12 h-12 text-yellow-600" />,
+                unit: 'Packs',
+                quotaLabel: 'Essential Items Cap',
+                data: { total: 5, used: 3, remaining: 2, item: 'Cooking Oil (5kg)', actionText: 'CONFIRM PURCHASE' }
+            },
+            CASH: {
+                id: 'CASH',
+                name: 'BSN (Sumbangan Tunai Rahmah)',
+                theme: 'teal',
+                icon: <Banknote className="w-12 h-12 text-teal-600" />,
+                unit: 'MYR',
+                quotaLabel: 'Phase 2 Allocation',
+                data: { total: 500, used: 0, remaining: 500, item: 'STR Cash Aid', actionText: 'DISPENSE CASH' }
+            }
+        };
+
+        /**
+         * MOCK USER DATABASE
+         */
+        const MOCK_USER = {
+            name: 'ROWAN BEAN ATKINSON',
+            ic_display: '******-10-5491',
+            phone: '+60 12-345 6789',
+            category: 'B40',
+            image: './my-photo.jpg' // Ensure this image exists relative to the HTML file or use a placeholder URL
+        };
+
+        function UniversalSubsidyKiosk() {
+            // --- STATE MANAGEMENT ---
+            const [activeProfile, setActiveProfile] = useState(MERCHANT_PROFILES.FUEL);
+            const [flowState, setFlowState] = useState('IDLE'); 
+            const [isMenuOpen, setIsMenuOpen] = useState(false); 
+            
+            const [scanProgress, setScanProgress] = useState(0);
+            const [wipeProgress, setWipeProgress] = useState(0);
+            
+            // Notification Logic (Generic)
+            const [showNotification, setShowNotification] = useState(false);
+            const [notificationType, setNotificationType] = useState('OTP'); // 'OTP' or 'MYDIGITAL'
+
+            // OTP Logic
+            const [phoneNumber, setPhoneNumber] = useState('');
+            const [otpInput, setOtpInput] = useState('');
+            const [generatedOtp, setGeneratedOtp] = useState(null);
+            const [resendTimer, setResendTimer] = useState(30);
+            const [otpError, setOtpError] = useState(false);
+
+            // IC Logic (New)
+            const [icInput, setIcInput] = useState('');
+            const [icError, setIcError] = useState(''); 
+
+            // Camera Logic
+            const videoRef = useRef(null);
+            const streamRef = useRef(null);
+            const [cameraError, setCameraError] = useState(false);
+            const [showFlash, setShowFlash] = useState(false);
+
+            // Inactivity Logic
+            const lastActivityRef = useRef(Date.now());
+            const [showTimeoutWarning, setShowTimeoutWarning] = useState(false);
+            const [timeoutCountdown, setTimeoutCountdown] = useState(10);
+            const [inactivityProgress, setInactivityProgress] = useState(100);
+            
+            // Constants
+            const INACTIVITY_LIMIT = 20000; 
+            
+            // --- HELPERS ---
+
+            const handleSecureSessionEnd = () => {
+                stopCamera(); 
+                setFlowState('WIPING');
+                setShowTimeoutWarning(false);
+                setIsMenuOpen(false); // Close menu on reset
+                let progress = 0;
+                const interval = setInterval(() => {
+                progress += 5; 
+                setWipeProgress(progress);
+                if (progress >= 100) {
+                    clearInterval(interval);
+                    // Reset all state
+                    setScanProgress(0);
+                    setPhoneNumber('');
+                    setOtpInput('');
+                    setIcInput(''); // Reset IC
+                    setIcError('');
+                    setShowNotification(false);
+                    setNotificationType('OTP');
+                    setGeneratedOtp(null);
+                    setResendTimer(30);
+                    setOtpError(false);
+                    setWipeProgress(0);
+                    setShowTimeoutWarning(false);
+                    setInactivityProgress(100);
+                    setShowFlash(false);
+                    lastActivityRef.current = Date.now(); 
+                    setFlowState('IDLE');
+                }
+                }, 40);
+            };
+
+            const resetInactivity = () => {
+                lastActivityRef.current = Date.now();
+                if (showTimeoutWarning) {
+                setShowTimeoutWarning(false);
+                setTimeoutCountdown(10);
+                }
+            };
+
+            const simulateProcessing = (nextState, duration = 800) => {
+                setTimeout(() => {
+                setFlowState(nextState);
+                }, duration);
+            };
+
+            const getDmsBarClass = (progress) => {
+                if (progress <= 20) return 'dms-warning';   
+                if (progress <= 60) return 'bg-yellow-500'; 
+                return 'bg-green-500';                     
+            };
+
+            // --- CAMERA HELPERS ---
+            const startCamera = async () => {
+                try {
+                setCameraError(false);
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 640 } } 
+                });
+                streamRef.current = stream;
+                if (videoRef.current) {
+                    videoRef.current.srcObject = stream;
+                }
+                } catch (err) {
+                console.error("Camera access error:", err);
+                setCameraError(true);
+                }
+            };
+
+            const stopCamera = () => {
+                if (streamRef.current) {
+                streamRef.current.getTracks().forEach(track => track.stop());
+                streamRef.current = null;
+                }
+            };
+
+            const handleBiometricScan = () => {
+                if (scanProgress > 0) return; // Prevent double trigger
+
+                let progress = 0;
+                const duration = 5000; // 5 Seconds
+                const intervalTime = 50; 
+                const totalSteps = duration / intervalTime;
+                const increment = 100 / totalSteps;
+
+                const interval = setInterval(() => {
+                progress += increment; 
+                setScanProgress((prev) => {
+                    if (prev >= 100) return 100;
+                    return Math.min(progress, 100);
+                });
+                
+                if (progress >= 100) {
+                    clearInterval(interval);
+                    setShowFlash(true); // Trigger Flash
+                    setTimeout(() => {
+                        setFlowState('VERIFYING');
+                        simulateProcessing('RESULT', 800); 
+                    }, 200); // Short delay for flash to be seen
+                }
+                }, intervalTime);
+            };
+
+            // --- EFFECTS ---
+
+            // Global Interaction
+            useEffect(() => {
+                const handleUserInteraction = () => {
+                lastActivityRef.current = Date.now();
+                if (showTimeoutWarning) {
+                    setShowTimeoutWarning(false);
+                    setTimeoutCountdown(10);
+                }
+                };
+                window.addEventListener('mousemove', handleUserInteraction);
+                window.addEventListener('mousedown', handleUserInteraction);
+                window.addEventListener('keypress', handleUserInteraction);
+                window.addEventListener('touchstart', handleUserInteraction);
+                return () => {
+                window.removeEventListener('mousemove', handleUserInteraction);
+                window.removeEventListener('mousedown', handleUserInteraction);
+                window.removeEventListener('keypress', handleUserInteraction);
+                window.removeEventListener('touchstart', handleUserInteraction);
+                };
+            }, [showTimeoutWarning]);
+
+            // Inactivity Timer
+            useEffect(() => {
+                if (flowState === 'IDLE' || flowState === 'WIPING') {
+                setShowTimeoutWarning(false);
+                setInactivityProgress(100);
+                return;
+                }
+                const interval = setInterval(() => {
+                const now = Date.now();
+                const timeSinceLast = now - lastActivityRef.current;
+                if (timeSinceLast <= INACTIVITY_LIMIT) {
+                    const remainingPercent = Math.max(100 - ((timeSinceLast / INACTIVITY_LIMIT) * 100), 0);
+                    setInactivityProgress(remainingPercent);
+                    if (showTimeoutWarning) setShowTimeoutWarning(false);
+                } else {
+                    if (!showTimeoutWarning) setShowTimeoutWarning(true);
+                    const timeInWarning = timeSinceLast - INACTIVITY_LIMIT;
+                    const remainingSeconds = Math.ceil(10 - (timeInWarning / 1000));
+                    setTimeoutCountdown(Math.max(remainingSeconds, 0));
+                    if (remainingSeconds <= 0) handleSecureSessionEnd();
+                }
+                }, 50);
+                return () => clearInterval(interval);
+            }, [flowState, showTimeoutWarning]); 
+
+            // Camera Lifecycle (Start/Stop)
+            useEffect(() => {
+                if (flowState === 'BIOMETRIC') {
+                    startCamera();
+                } else {
+                    stopCamera();
+                    setShowFlash(false);
+                    if (flowState !== 'VERIFYING' && flowState !== 'RESULT' && flowState !== 'SUCCESS') {
+                        setScanProgress(0);
+                    }
+                }
+                return () => stopCamera();
+            }, [flowState]);
+
+            // Auto-Start Scan Logic
+            useEffect(() => {
+                let scanTimer;
+                if (flowState === 'BIOMETRIC' && !cameraError) {
+                    // Delay slightly to allow camera to spin up
+                    scanTimer = setTimeout(() => {
+                        handleBiometricScan();
+                    }, 1000);
+                }
+                return () => clearTimeout(scanTimer);
+            }, [flowState, cameraError]);
+
+
+            // Timer Effect for OTP
+            useEffect(() => {
+                let interval;
+                if (flowState === 'OTP_ENTRY' && resendTimer > 0) {
+                interval = setInterval(() => {
+                    setResendTimer((prev) => prev - 1);
+                }, 1000);
+                }
+                return () => clearInterval(interval);
+            }, [flowState, resendTimer]);
+
+            const handleSendOtp = () => {
+                if (phoneNumber.length < 9) return; 
+                setFlowState('OTP_ENTRY');
+                setNotificationType('OTP');
+                setResendTimer(30);
+                setOtpError(false);
+                const code = Math.floor(1000 + Math.random() * 9000).toString();
+                setGeneratedOtp(code);
+                setTimeout(() => setShowNotification(true), 1000);
+                setTimeout(() => setShowNotification(false), 8000);
+            };
+
+            const handleResendOtp = () => {
+                setResendTimer(30);
+                setOtpError(false);
+                setOtpInput('');
+                const code = Math.floor(1000 + Math.random() * 9000).toString();
+                setGeneratedOtp(code);
+                setNotificationType('OTP');
+                setShowNotification(true);
+                setTimeout(() => setShowNotification(false), 5000);
+            };
+
+            const handleVerifyOtp = () => {
+                if (otpInput === generatedOtp || otpInput === '0000') {
+                    setFlowState('VERIFYING');
+                    setShowNotification(false);
+                    setOtpError(false);
+                    simulateProcessing('RESULT', 800); 
+                } else {
+                    setOtpError(true);
+                    setOtpInput(''); 
+                    setTimeout(() => setOtpError(false), 2000); 
+                }
+            };
+
+            const handleAction = () => {
+                setFlowState('PROCESSING_TRANSACTION');
+                simulateProcessing('SUCCESS', 1200);
+            };
+
+            const handleMyDigitalAuth = () => {
+                // User clicked "Approve" on the mock notification
+                setShowNotification(false);
+                setFlowState('VERIFYING');
+                simulateProcessing('RESULT', 1000);
+            };
+
+            // --- RENDER HELPERS ---
+
+            const renderTopBar = () => (
+                <div className="bg-slate-900 text-white p-4 shadow-lg flex justify-between items-center border-b-4 border-yellow-500 z-50 relative shrink-0">
+                <div className="flex items-center space-x-3">
+                    <div className="bg-white p-1 rounded">
+                    <img src="https://upload.wikimedia.org/wikipedia/commons/2/26/Coat_of_arms_of_Malaysia.svg" alt="Jata Negara" className="h-10 w-auto" />
+                    </div>
+                    <div>
+                    <h1 className="text-sm font-bold tracking-widest text-slate-400">KERAJAAN MALAYSIA</h1>
+                    <h2 className="text-lg font-bold">MyID Touch KIOSK</h2>
+                    </div>
+                </div>
+
+                {/* FIXED: CLICK-BASED DROPDOWN FOR TOUCHSCREENS */}
+                <div className="relative">
+                    {/* Overlay to close menu when clicking outside */}
+                    {isMenuOpen && (
+                        <div className="fixed inset-0 z-40" onClick={() => setIsMenuOpen(false)}></div>
+                    )}
+                    
+                    <button 
+                        onClick={() => setIsMenuOpen(!isMenuOpen)}
+                        className={`flex items-center space-x-2 bg-slate-800 px-4 py-2 rounded border transition z-50 relative ${isMenuOpen ? 'border-yellow-500 bg-slate-700' : 'border-slate-600 hover:bg-slate-700'}`}
+                    >
+                        <span className="text-xs font-mono text-yellow-500">SYSTEM MODE:</span>
+                        <span className="font-bold text-sm">{activeProfile.name}</span>
+                        <ChevronDown size={16} className={`transition-transform duration-200 ${isMenuOpen ? 'rotate-180' : ''}`} />
+                    </button>
+
+                    {isMenuOpen && (
+                        <div className="absolute right-0 top-full mt-2 w-72 bg-slate-800 border border-slate-600 rounded-xl shadow-2xl z-50 overflow-hidden animate-fadeIn">
+                            <div className="bg-slate-900 px-4 py-2 text-xs font-bold text-slate-400 uppercase tracking-wider border-b border-slate-700">Select Application</div>
+                            {Object.values(MERCHANT_PROFILES).map((profile) => (
+                                <button
+                                key={profile.id}
+                                onClick={() => {
+                                    setActiveProfile(profile);
+                                    handleSecureSessionEnd(); // Triggers the wipe animation
+                                }}
+                                className={`w-full text-left px-4 py-4 border-b border-slate-700 last:border-0 transition-colors flex items-center space-x-3 
+                                    ${activeProfile.id === profile.id ? 'bg-slate-700/50 border-l-4 border-l-yellow-500' : 'hover:bg-slate-700 border-l-4 border-l-transparent'}`}
+                                >
+                                <div className="p-2 bg-slate-900 rounded-lg">{React.cloneElement(profile.icon, { className: "w-6 h-6" })}</div>
+                                <div>
+                                    <div className="font-bold text-sm text-white">{profile.name}</div>
+                                    <div className="text-xs text-slate-400 mt-0.5">{profile.item}</div>
+                                </div>
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                </div>
+
+                {/* Inactivity Bar */}
+                {flowState !== 'IDLE' && flowState !== 'WIPING' && !showTimeoutWarning && (
+                    <div className="absolute bottom-0 left-0 w-full h-1.5 bg-slate-800 z-50">
+                        <div 
+                            id="dms-bar"
+                            className={`h-full absolute left-0 top-0 ${getDmsBarClass(inactivityProgress)}`} 
+                            style={{ width: `${inactivityProgress}%` }}
+                        ></div>
+                    </div>
+                )}
+                </div>
+            );
+
+            const renderFooter = () => (
+                <div className="bg-slate-100 text-slate-500 py-3 px-6 text-xs flex justify-between items-center border-t border-slate-300 z-10 relative shrink-0">
+                <div className="flex items-center space-x-6">
+                    <span className="flex items-center space-x-2">
+                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                    <span className="font-bold text-slate-600">GPN DIRECT LINK (10Gbps)</span>
+                    </span>
+                    <span className="flex items-center space-x-2">
+                    <ShieldCheck size={14} className="text-blue-600" />
+                    <span>AES-256 ENCRYPTED</span>
+                    </span>
+                </div>
+                <div className="flex items-center space-x-4">
+                    <span className="flex items-center space-x-1 text-orange-600 bg-orange-50 px-2 py-0.5 rounded border border-orange-200">
+                        <Cpu size={12} />
+                        <span className="font-mono font-bold">VOLATILE RAM DISK: ACTIVE</span>
+                    </span>
+                    <span className="font-mono text-slate-400">
+                    ID: KSK-{activeProfile.id}-0045
+                    </span>
+                </div>
+                </div>
+            );
+
+            const renderBiometricScreen = () => (
+                <div className="flex flex-col items-center justify-center h-full space-y-6 animate-fadeIn relative z-10 w-full max-w-xl mx-auto">
+                    <div className="text-center">
+                        <h2 className="text-2xl font-bold text-slate-800">Biometric Verification</h2>
+                        <p className="text-slate-500 mt-1">Position your <strong>thumb</strong> within the frame.</p>
+                    </div>
+
+                    {/* Camera Container */}
+                    <div className="relative w-full aspect-[4/3] bg-slate-900 rounded-2xl overflow-hidden shadow-2xl border-4 border-slate-200">
+                        {/* Video Element - Attached to Ref */}
+                        <video 
+                            ref={videoRef} 
+                            autoPlay 
+                            playsInline 
+                            muted 
+                            className="absolute inset-0 w-full h-full object-cover transform scale-x-[-1]" 
+                        />
+                        
+                        {/* Flash Effect Overlay */}
+                        <div className={`absolute inset-0 bg-white z-20 pointer-events-none transition-opacity duration-200 ${showFlash ? 'opacity-100' : 'opacity-0'}`}></div>
+
+                        {/* Error Fallback */}
+                        {cameraError && (
+                            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-800 text-white p-6 text-center z-10">
+                                <Camera size={48} className="mb-4 text-red-400" />
+                                <p className="text-lg font-bold">Camera Access Denied</p>
+                                <p className="text-sm text-slate-400 mt-2">Please check your permissions or use Phone Verification.</p>
+                            </div>
+                        )}
+
+                        {/* HUD Overlay */}
+                        {!cameraError && (
+                            <div className="absolute inset-0 pointer-events-none z-10">
+                                <div className="absolute inset-0 flex items-center justify-center opacity-30">
+                                    <Fingerprint size={200} className="text-white" strokeWidth={0.5} />
+                                </div>
+                                
+                                {/* Scanning Laser */}
+                                {scanProgress > 0 && (
+                                    <div 
+                                        className="absolute left-0 w-full h-1 bg-green-500 shadow-[0_0_15px_rgba(34,197,94,0.8)] transition-all duration-100 ease-linear"
+                                        style={{ top: `${scanProgress}%` }}
+                                    ></div>
+                                )}
+
+                                {/* Corners */}
+                                <div className="absolute top-4 left-4 w-8 h-8 border-t-4 border-l-4 border-white/50 rounded-tl-lg"></div>
+                                <div className="absolute top-4 right-4 w-8 h-8 border-t-4 border-r-4 border-white/50 rounded-tr-lg"></div>
+                                <div className="absolute bottom-4 left-4 w-8 h-8 border-b-4 border-l-4 border-white/50 rounded-bl-lg"></div>
+                                <div className="absolute bottom-4 right-4 w-8 h-8 border-b-4 border-r-4 border-white/50 rounded-br-lg"></div>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Action Button */}
+                    <div className="w-full flex space-x-4">
+                        <button 
+                            onClick={() => setFlowState('IDLE')}
+                            className="flex-1 py-4 bg-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-300"
+                        >
+                            CANCEL
+                        </button>
+                        
+                        <div className="flex-1 flex items-center justify-center font-bold text-slate-500 font-mono">
+                            {scanProgress > 0 ? (
+                                <span className="flex items-center animate-pulse text-blue-600">
+                                    <Scan className="mr-2" />
+                                    SCANNING... {Math.round(5 - (scanProgress/20))}s
+                                </span>
+                            ) : (
+                                <span className="flex items-center">
+                                    <Camera className="mr-2" />
+                                    INITIALIZING...
+                                </span>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+
+            // Timeout Warning Component
+            const TimeoutWarning = () => (
+                <div className="absolute inset-0 z-40 bg-black/60 backdrop-blur-sm flex items-end justify-center pb-20 animate-fadeIn">
+                    <div className="bg-white rounded-2xl p-6 w-[90%] max-w-md shadow-2xl border-l-8 border-orange-500 animate-slideUp">
+                        <div className="flex items-start space-x-4">
+                            <div className="p-3 bg-orange-100 rounded-full">
+                                <Clock className="w-8 h-8 text-orange-600 animate-pulse" />
+                            </div>
+                            <div className="flex-1">
+                                <h3 className="text-lg font-bold text-slate-800">Session Expiring</h3>
+                                <p className="text-slate-500 text-sm mt-1">
+                                    For security, your session will automatically end in <span className="font-bold text-red-600 text-lg">{timeoutCountdown}</span> seconds.
+                                </p>
+                                
+                                {/* Progress Bar */}
+                                <div className="w-full bg-slate-200 rounded-full h-2 mt-4 overflow-hidden">
+                                    <div 
+                                        className="h-full bg-orange-500 transition-all duration-1000 ease-linear"
+                                        style={{ width: `${(timeoutCountdown / 10) * 100}%` }}
+                                    ></div>
+                                </div>
+
+                                <button 
+                                    onClick={resetInactivity}
+                                    className="w-full mt-4 py-3 bg-slate-900 text-white font-bold rounded-lg hover:bg-slate-800 transition"
+                                >
+                                    I'M STILL HERE
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+
+            // --- RENDER CONTROLLER ---
+            const renderContent = () => {
+                switch(flowState) {
+                case 'IDLE': return (
+                    <div className="flex flex-col items-center justify-center h-full space-y-8 animate-fadeIn">
+                    <div className="bg-white p-8 rounded-full shadow-xl ring-4 ring-slate-100">
+                        {activeProfile.icon}
+                    </div>
+                    <div className="text-center space-y-2">
+                        <h2 className="text-3xl font-bold text-slate-800">Welcome to {activeProfile.name.split('(')[0]}</h2>
+                        <p className="text-slate-500 text-lg">Choose a verification method to proceed.</p>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full max-w-4xl mt-8 px-4">
+                        <button onClick={() => setFlowState('BIOMETRIC')} className="group flex flex-col items-center justify-center p-8 bg-white border-2 border-slate-200 text-slate-700 rounded-2xl shadow-sm hover:border-blue-500 hover:shadow-xl hover:text-blue-600 transform hover:-translate-y-1 transition-all duration-300">
+                        <div className="w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center mb-4 group-hover:bg-blue-100 transition"><Fingerprint className="w-10 h-10 text-blue-600" /></div>
+                        <span className="font-bold text-xl">Thumbprint</span>
+                        <span className="text-sm text-slate-400 mt-1">MyKad Biometric</span>
+                        </button>
+                        <button onClick={() => setFlowState('PHONE_ENTRY')} className="group flex flex-col items-center justify-center p-8 bg-white border-2 border-slate-200 text-slate-700 rounded-2xl shadow-sm hover:border-green-500 hover:shadow-xl hover:text-green-600 transform hover:-translate-y-1 transition-all duration-300">
+                        <div className="w-20 h-20 bg-green-50 rounded-full flex items-center justify-center mb-4 group-hover:bg-green-100 transition"><Smartphone className="w-10 h-10 text-green-600" /></div>
+                        <span className="font-bold text-xl">Phone Number</span>
+                        <span className="text-sm text-slate-400 mt-1">SMS One-Time Pin</span>
+                        </button>
+                        <button onClick={() => setFlowState('IC_ENTRY')} className="group flex flex-col items-center justify-center p-8 bg-white border-2 border-slate-200 text-slate-700 rounded-2xl shadow-sm hover:border-indigo-500 hover:shadow-xl hover:text-indigo-600 transform hover:-translate-y-1 transition-all duration-300">
+                            <div className="w-20 h-20 bg-indigo-50 rounded-full flex items-center justify-center mb-4 group-hover:bg-indigo-100 transition">
+                                <CreditCard className="w-10 h-10 text-indigo-600" />
+                            </div>
+                            <span className="font-bold text-xl">MyKad Number</span>
+                            <span className="text-sm text-slate-400 mt-1">Manual Entry</span>
+                        </button>
+                    </div>
+                    </div>
+                );
+                case 'IC_ENTRY': return (
+                    <div className="flex flex-col items-center justify-center h-full w-full max-w-md mx-auto space-y-6 animate-fadeIn">
+                        <div className="text-center">
+                            <div className="inline-block p-4 bg-indigo-100 rounded-full mb-4">
+                                <CreditCard className="w-8 h-8 text-indigo-600" />
+                            </div>
+                            <h3 className="text-2xl font-bold text-slate-800">MyKad Verification</h3>
+                            <p className="text-slate-500">Enter your 12-digit Identity Card number.</p>
+
+                            {/* Prototype Hint */}
+                            <div className="mt-3 bg-slate-100 border border-slate-300 text-slate-600 px-4 py-2 rounded text-xs font-mono">
+                                <p><strong>PROTOTYPE DEBUG:</strong></p>
+                                <p>MyKad: 850212-14-5566 (Any 12 digits)</p>
+                            </div>
+                        </div>
+                        
+                        <div className="w-full space-y-4">
+                            {/* IC Number Input */}
+                            <div className="w-full bg-white p-6 rounded-xl shadow-md border border-slate-200">
+                                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">MyKad Number</label>
+                                <div className={`flex items-center border-2 rounded-lg transition-all overflow-hidden ${icError ? 'border-red-500 ring-4 ring-red-100' : 'border-slate-300 focus-within:border-indigo-500 focus-within:ring-4 focus-within:ring-indigo-100'}`}>
+                                    <input 
+                                        type="text" 
+                                        value={icInput} 
+                                        onChange={(e) => {
+                                            const val = e.target.value.replace(/\D/g, '');
+                                            if (val.length <= 12) setIcInput(val);
+                                            setIcError('');
+                                        }} 
+                                        placeholder="YYYYMM-PB-####" 
+                                        className="flex-1 text-2xl tracking-widest p-3 focus:outline-none font-mono text-center text-slate-800 placeholder-slate-300" 
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Error Message */}
+                        {icError && (
+                            <div className="flex items-center space-x-2 text-red-600 bg-red-50 px-4 py-2 rounded-lg animate-fadeIn">
+                                <AlertTriangle size={16} />
+                                <span className="text-xs font-bold">{icError}</span>
+                            </div>
+                        )}
+
+                        <div className="flex space-x-4 w-full mt-2">
+                            <button onClick={handleSecureSessionEnd} className="flex-1 py-4 bg-slate-200 text-slate-700 rounded-lg font-bold hover:bg-slate-300">CANCEL</button>
+                            <button 
+                                onClick={() => {
+                                    if (icInput.length !== 12) {
+                                        setIcError('MyKad Number must be 12 digits');
+                                    } else {
+                                        // Proceed to Waiting for App Notification
+                                        setFlowState('MYDIGITAL_ID_AUTH');
+                                        setNotificationType('MYDIGITAL');
+                                        setTimeout(() => setShowNotification(true), 800); // Simulate delay
+                                    }
+                                }} 
+                                className="flex-1 py-4 bg-indigo-600 text-white rounded-lg font-bold hover:bg-indigo-700 shadow-lg hover:shadow-xl transition-all flex items-center justify-center space-x-2"
+                            >
+                                <span>REQUEST LOGIN</span>
+                                <ArrowRight size={20} />
+                            </button>
+                        </div>
+                    </div>
+                );
+                case 'MYDIGITAL_ID_AUTH': return (
+                    <div className="flex flex-col items-center justify-center h-full w-full max-w-md mx-auto space-y-8 animate-fadeIn text-center">
+                        <div className="relative">
+                            <div className="w-32 h-32 bg-indigo-50 rounded-full flex items-center justify-center animate-pulse">
+                                <Smartphone className="w-16 h-16 text-indigo-600" />
+                            </div>
+                            <div className="absolute -top-2 -right-2 bg-red-500 w-8 h-8 rounded-full border-4 border-white flex items-center justify-center">
+                                <BellRing size={14} className="text-white fill-current" />
+                            </div>
+                        </div>
+                        
+                        <div className="space-y-3">
+                            <h3 className="text-2xl font-bold text-slate-800">Check your MyDigital ID App</h3>
+                            <p className="text-slate-500 text-lg leading-relaxed">
+                                We've sent a secure login request to your registered device for <span className="font-mono font-bold text-slate-800">{icInput}</span>.
+                            </p>
+                            <p className="text-slate-400 text-sm font-bold animate-pulse pt-2">
+                                Waiting for approval...
+                            </p>
+                        </div>
+
+                        <div className="w-full bg-white p-4 rounded-xl border border-slate-200 flex items-center space-x-4">
+                            <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center">
+                                <div className="w-2 h-2 bg-orange-500 rounded-full animate-ping"></div>
+                            </div>
+                            <div className="text-left flex-1">
+                                <div className="text-xs font-bold text-slate-400 uppercase">Status</div>
+                                <div className="text-sm font-bold text-slate-700">Pending Authorization</div>
+                            </div>
+                        </div>
+
+                        <button onClick={handleSecureSessionEnd} className="text-slate-400 font-bold hover:text-slate-600 text-sm mt-8">
+                            Cancel Request
+                        </button>
+                    </div>
+                );
+                case 'PHONE_ENTRY': return (
+                    <div className="flex flex-col items-center justify-center h-full w-full max-w-md mx-auto space-y-6 animate-fadeIn">
+                    <div className="text-center"><div className="inline-block p-4 bg-green-100 rounded-full mb-4"><Smartphone className="w-8 h-8 text-green-600" /></div><h3 className="text-2xl font-bold text-slate-800">Enter Your Mobile Phone Number</h3><p className="text-slate-500">Please ensure the phone number linked to your <strong>MyDigital ID</strong> and registered with your telco. We will send a 4-digit code to verify your identity.</p></div>
+                    <div className="w-full bg-white p-6 rounded-xl shadow-md border border-slate-200"><label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Mobile Number</label><div className="flex items-center border-2 border-slate-300 rounded-lg focus-within:border-green-500 focus-within:ring-4 focus-within:ring-green-100 transition-all overflow-hidden"><div className="bg-slate-100 px-4 py-3 border-r border-slate-300 font-bold text-slate-600">+60</div><input type="tel" value={phoneNumber} onChange={(e) => setPhoneNumber(e.target.value)} placeholder="12 345 6789" className="flex-1 text-2xl tracking-wide p-3 focus:outline-none font-mono text-slate-800 placeholder-slate-300" /></div></div>
+                    <div className="flex space-x-4 w-full"><button onClick={handleSecureSessionEnd} className="flex-1 py-4 bg-slate-200 text-slate-700 rounded-lg font-bold hover:bg-slate-300">CANCEL</button><button onClick={handleSendOtp} disabled={phoneNumber.length < 5} className="flex-1 py-4 bg-green-600 text-white rounded-lg font-bold hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"><span>SEND CODE</span><ArrowRight size={20} /></button></div>
+                    </div>
+                );
+                case 'OTP_ENTRY': return (
+                    <div className="flex flex-col items-center justify-center h-full w-full max-w-md mx-auto space-y-6 animate-fadeIn relative"><div className="text-center"><h3 className="text-2xl font-bold text-slate-800">Verification Code</h3><p className="text-slate-500">Enter the 4-digit code sent to <span className="font-bold text-slate-800">+60 {phoneNumber}</span></p></div><div className="relative w-full flex justify-center"><div className="flex space-x-4 my-4 relative z-10">{[0, 1, 2, 3].map((i) => (<div key={i} className={`w-16 h-20 border-b-4 bg-white rounded-t-lg shadow-sm flex items-center justify-center transition-all ${otpError ? 'border-red-500 bg-red-50' : 'border-slate-300'} ${otpInput.length === i ? 'border-blue-500' : ''}`}><span className={`text-4xl font-mono font-bold ${otpError ? 'text-red-500' : 'text-slate-800'}`}>{otpInput[i] || ''}</span></div>))}</div>{otpError && (<div className="absolute -bottom-8 left-0 right-0 text-center text-red-600 font-bold text-sm animate-pulse flex items-center justify-center gap-1"><AlertTriangle size={16} /><span>Invalid Code</span></div>)}</div><input type="text" maxLength={4} value={otpInput} onChange={(e) => { if (!otpError) setOtpInput(e.target.value.replace(/[^0-9]/g, '')); }} className="opacity-0 absolute inset-0 cursor-default z-20 h-full w-full" autoFocus /><div className="flex space-x-4 w-full pt-6 relative z-30"><button onClick={() => setFlowState('PHONE_ENTRY')} className="flex-1 py-4 bg-slate-200 text-slate-700 rounded-lg font-bold hover:bg-slate-300 pointer-events-auto">BACK</button><button onClick={handleVerifyOtp} disabled={otpInput.length !== 4} className="flex-1 py-4 bg-green-600 text-white rounded-lg font-bold hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:shadow-xl transition-all pointer-events-auto">VERIFY</button></div><div className="text-center mt-2 relative z-30"><button onClick={handleResendOtp} disabled={resendTimer > 0} className={`text-sm font-bold transition-colors pointer-events-auto ${resendTimer > 0 ? 'text-slate-400 cursor-not-allowed' : 'text-blue-600 hover:text-blue-700 hover:underline'}`}>{resendTimer > 0 ? `Resend Code in ${resendTimer}s` : 'Resend Code'}</button></div></div>
+                );
+                case 'BIOMETRIC': return renderBiometricScreen(); // No useEffect inside
+                case 'VERIFYING': 
+                case 'PROCESSING_TRANSACTION': return (
+                    <div className="flex flex-col items-center justify-center h-full space-y-6 animate-fadeIn"><div className="relative"><div className="w-24 h-24 border-8 border-slate-200 border-t-blue-600 rounded-full animate-spin duration-700"></div><div className="absolute inset-0 flex items-center justify-center"><Zap className="text-yellow-500 w-10 h-10 animate-pulse" fill="currentColor" /></div></div><div className="text-center space-y-2"><h3 className="text-xl font-bold text-slate-800">Accessing Government Private Network (GPN)</h3><div className="flex flex-col items-center space-y-1"><span className="text-xs font-mono text-slate-400">Retrieving {activeProfile.quotaLabel}...</span><div className="flex items-center space-x-2 bg-green-50 text-green-700 px-3 py-1 rounded-full text-xs font-bold border border-green-200"><div className="w-2 h-2 bg-green-500 rounded-full animate-ping"></div><span>LATENCY: 12ms (ULTRA-LOW)</span></div></div></div></div>
+                );
+                case 'RESULT': return (
+                    <div className="flex flex-col h-full animate-fadeIn p-4 items-center overflow-y-auto"><div className="mb-4 text-center shrink-0"><h2 className="text-2xl font-bold text-slate-800">Verification Successful</h2><p className="text-slate-500">Please confirm details below</p></div><div className="bg-white rounded-2xl shadow-xl overflow-hidden w-full max-w-4xl flex flex-col shrink-0"><div className="bg-[#007A5E] p-5 flex flex-col md:flex-row justify-between items-center text-white space-y-3 md:space-y-0"><div className="flex items-center space-x-3"><ShieldCheck size={32} className="text-white shrink-0" strokeWidth={2.5} /><div className="leading-tight"><div className="font-bold text-xl tracking-tight">IDENTITY VERIFIED</div><div className="text-[10px] font-medium text-white/90 tracking-wide uppercase">G2G BIOMETRIC MATCH CONFIRMED</div></div></div><div className="bg-white/20 backdrop-blur-md border border-white/30 px-3 py-1.5 rounded-lg shadow-sm"><span className="text-xs font-bold tracking-wider">TRUST SCORE 100%</span></div></div><div className="flex flex-col p-6"><div className="flex flex-col md:flex-row items-center md:items-start space-y-5 md:space-y-0 md:space-x-6 pb-6 border-b border-slate-200"><div className="w-28 h-36 bg-slate-200 rounded-lg shadow-inner border border-slate-300 flex items-center justify-center overflow-hidden shrink-0 relative">
+                        {/* UPDATED: Profile Image Rendering with Fallback */}
+                        {MOCK_USER.image ? (
+                            <img src={MOCK_USER.image} alt="User Profile" className="w-full h-full object-cover" />
+                        ) : (
+                            <User size={64} className="text-slate-400 absolute bottom-0 translate-y-2" />
+                        )}
+                        <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/20 to-transparent pointer-events-none"></div></div><div className="flex-1 w-full"><div className="grid grid-cols-1 md:grid-cols-2 gap-y-5 gap-x-6"><div className="space-y-4"><div><div className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">Citizen Name</div><div className="text-lg font-bold text-slate-900 leading-tight">{MOCK_USER.name}</div></div><div><div className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">MyKad Number</div><div className="text-lg font-mono font-bold text-slate-700 tracking-wider">{MOCK_USER.ic_display}</div></div></div><div className="space-y-4"><div><div className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">Category</div><div className="inline-flex items-center px-3 py-1.5 rounded-lg font-bold text-sm bg-purple-100 text-purple-800 border border-purple-200 uppercase tracking-wide w-full md:w-auto">{MOCK_USER.category} HOUSEHOLD</div></div><div><div className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">Subsidy Program</div><div className="inline-flex items-center space-x-2 bg-blue-50 text-blue-700 px-3 py-1.5 rounded-lg font-bold text-sm border border-blue-100 w-full md:w-auto"><div className="p-0.5 bg-blue-100 rounded">{activeProfile.icon && React.cloneElement(activeProfile.icon, { className: "w-3.5 h-3.5" })}</div><span className="truncate">{activeProfile.data.item}</span></div></div></div></div></div></div><div className="pt-6 w-full"><div className="border-2 border-dashed border-slate-300 rounded-xl p-5 bg-slate-50/50 flex flex-col md:flex-row items-center justify-between gap-5"><div className="text-center md:text-left"><div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">{activeProfile.quotaLabel}</div><div className="flex items-baseline justify-center md:justify-start text-slate-800 font-black tracking-tighter">{activeProfile.id === 'CASH' && <span className="text-2xl mr-1">RM</span>}<span className="text-4xl md:text-5xl">{activeProfile.data.remaining}</span>{activeProfile.id !== 'CASH' && <span className="text-lg ml-2 text-slate-400">{activeProfile.unit}</span>}</div></div><div className="flex-1 w-full max-w-md"><div className="flex justify-between text-[10px] font-bold text-slate-400 uppercase mb-1"><span>Used: {activeProfile.data.used}</span><span>Total Limit: {activeProfile.data.total}</span></div><div className="w-full bg-slate-200 rounded-full h-3 overflow-hidden shadow-inner"><div className={`h-full rounded-full transition-all duration-1000 ${((activeProfile.data.remaining / activeProfile.data.total) * 100) > 50 ? 'bg-[#007A5E]' : ((activeProfile.data.remaining / activeProfile.data.total) * 100) > 20 ? 'bg-yellow-500' : 'bg-red-500'}`} style={{ width: `${(activeProfile.data.remaining / activeProfile.data.total) * 100}%` }}></div></div><div className="text-right mt-1.5"><span className="text-[10px] font-bold text-[#007A5E] bg-white border border-[#007A5E]/20 px-2 py-0.5 rounded">{Math.round((activeProfile.data.remaining / activeProfile.data.total) * 100)}% Balance Available</span></div></div></div></div></div></div><div className="mt-6 flex space-x-4 w-full max-w-4xl shrink-0"><button onClick={handleSecureSessionEnd} className="px-6 py-4 bg-white border border-slate-300 text-slate-700 font-bold rounded-xl hover:bg-slate-50 flex items-center space-x-2 shadow-sm"><LogOut size={20} /><span>EXIT</span></button><button onClick={handleAction} className={`flex-1 py-4 text-white text-xl font-bold rounded-xl shadow-lg flex items-center justify-center space-x-3 transition-transform hover:-translate-y-1 ${activeProfile.theme === 'blue' ? 'bg-blue-600 hover:bg-blue-700' : activeProfile.theme === 'yellow' ? 'bg-yellow-500 hover:bg-yellow-600 text-slate-900' : 'bg-teal-600 hover:bg-teal-700'}`}><span>{activeProfile.data.actionText}</span><ArrowRight size={24} /></button></div></div>
+                );
+                case 'SUCCESS': return (
+                    <div className="flex flex-col items-center justify-center h-full space-y-6 animate-fadeIn"><div className="w-24 h-24 bg-green-100 rounded-full flex items-center justify-center"><CheckCircle className="w-12 h-12 text-green-600" /></div><div className="text-center"><h2 className="text-3xl font-bold text-slate-800">Transaction Approved</h2><p className="text-slate-500 mt-2 text-lg">{activeProfile.id === 'FUEL' && 'Pump #04 Authorized. Please begin fueling.'}{activeProfile.id === 'RETAIL' && 'Subsidi items confirmed. Please proceed to cashier.'}{activeProfile.id === 'CASH' && 'RM 500 Dispensed. Please take your cash.'}</p></div><div className="bg-yellow-50 border border-yellow-200 text-yellow-800 px-6 py-4 rounded-lg text-sm max-w-md text-center mt-4">Your balance has been updated in the PADU Central Database.</div><button onClick={handleSecureSessionEnd} className="mt-8 text-blue-600 font-bold hover:underline">Return to Home</button></div>
+                );
+                case 'WIPING': return (
+                    <div className="flex flex-col items-center justify-center h-full space-y-6 bg-slate-900 absolute inset-0 z-50 animate-fadeIn text-white"><div className="w-20 h-20 bg-red-500/20 rounded-full flex items-center justify-center border-4 border-red-500/50"><Trash2 className="w-10 h-10 text-red-500" /></div><div className="text-center space-y-2 max-w-md"><h2 className="text-2xl font-bold font-mono text-red-400">SECURE SESSION ENDING</h2><p className="text-slate-400 text-sm">Purging Volatile RAM Disk... All user data is being permanently sanitized.</p></div><div className="w-64 space-y-2"><div className="h-2 bg-slate-700 rounded-full overflow-hidden"><div className="h-full bg-red-500 transition-all duration-75" style={{ width: `${wipeProgress}%` }}></div></div><div className="flex justify-between text-xs font-mono text-slate-500"><span>SECTOR 0x00...0xFF</span><span>{wipeProgress}%</span></div></div></div>
+                );
+                default: return <IdleScreen />; 
+                }
+            };
+
+            return (
+                <div className="min-h-screen bg-slate-200 flex items-center justify-center p-4 font-sans select-none relative">
+                
+                {/* --- INJECTED CSS FOR DMS BAR --- */}
+                <style>{`
+                    #dms-bar { transition: width 0.1s linear; }
+                    .dms-warning { animation: flash-warning 0.5s infinite; }
+                    @keyframes flash-warning { 
+                    0%, 100% { background-color: #ef4444; } 
+                    50% { background-color: #fee2e2; } 
+                    }
+                `}</style>
+
+                {showNotification && (
+                    <div className="fixed top-12 right-12 z-[100] animate-slideInRight">
+                    <div className="bg-white/90 backdrop-blur-md border border-slate-200 shadow-2xl rounded-2xl p-4 w-80 ring-1 ring-black/5">
+                        
+                        {/* HEADER */}
+                        <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center space-x-2">
+                                <div className="w-6 h-6 bg-green-500 rounded-md flex items-center justify-center">
+                                <MessageSquare size={14} className="text-white" />
+                                </div>
+                                <span className="text-xs font-bold text-slate-700 uppercase">Messages • Now</span>
+                            </div>
+                            <button onClick={() => setShowNotification(false)}><X size={14} className="text-slate-400" /></button>
+                        </div>
+
+                        {/* CONTENT SWITCHER */}
+                        {notificationType === 'OTP' ? (
+                            <>
+                                <div className="text-sm font-bold text-slate-900">MyDigital ID Verification</div>
+                                <div className="text-sm text-slate-600">Your OTP code is <span className="font-bold text-black text-lg">{generatedOtp}</span>. Do not share this code.</div>
+                            </>
+                        ) : (
+                            <>
+                                <div className="text-sm font-bold text-slate-900">MyDigital ID Login</div>
+                                <div className="text-sm text-slate-600 mb-3">Authorization request received for <strong>{icInput}</strong>.</div>
+                                <button 
+                                    onClick={handleMyDigitalAuth}
+                                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 rounded-lg text-sm shadow-sm transition-colors"
+                                >
+                                    APPROVE LOGIN
+                                </button>
+                            </>
+                        )}
+                    </div>
+                    <div className="text-center mt-2">
+                        <span className="bg-black/50 text-white text-[10px] px-2 py-1 rounded-full backdrop-blur-sm">User's Device Simulator</span>
+                    </div>
+                    </div>
+                )}
+
+                {showTimeoutWarning && <TimeoutWarning />}
+
+                <div className="w-full max-w-4xl h-[800px] bg-white rounded-3xl shadow-2xl overflow-hidden flex flex-col border border-slate-300 relative z-10">
+                    
+                    {renderTopBar()}
+
+                    <main className="flex-1 relative overflow-y-auto bg-slate-50">
+                    <div className="absolute inset-0 opacity-5 pointer-events-none" 
+                            style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, black 1px, transparent 0)', backgroundSize: '40px 40px' }}>
+                    </div>
+                    
+                    <div className="h-full relative z-10 p-6">
+                        {renderContent()}
+                    </div>
+                    </main>
+
+                    {renderFooter()}
+                    
+                </div>
+                </div>
+            );
+        }
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(<UniversalSubsidyKiosk />);
+    </script>
+
+    <!-- Firebase SDK -->
+    <script type="module">
+        // Import the functions you need from the SDKs you need
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAnalytics } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-analytics.js";
+        
+        // Your web app's Firebase configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyBTr1RuO6vAsqv-VMVSHz0xq5pGB5zkifo",
+            authDomain: "mytouchid.firebaseapp.com",
+            databaseURL: "https://mytouchid-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "mytouchid",
+            storageBucket: "mytouchid.firebasestorage.app",
+            messagingSenderId: "751774220832",
+            appId: "1:751774220832:web:4e32a87aad60af8ea13245",
+            measurementId: "G-ZDY6Z8H40W"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const analytics = getAnalytics(app);
+    </script>
+</body>
+
+</html>
+
+
+
